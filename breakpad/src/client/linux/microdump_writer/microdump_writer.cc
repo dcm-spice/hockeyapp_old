@@ -41,7 +41,6 @@
 #include "client/linux/log/log.h"
 #include "client/linux/minidump_writer/linux_ptrace_dumper.h"
 #include "common/linux/linux_libc_support.h"
-#include "common/scoped_ptr.h"
 
 namespace {
 
@@ -51,7 +50,6 @@ using google_breakpad::LinuxPtraceDumper;
 using google_breakpad::MappingInfo;
 using google_breakpad::MappingList;
 using google_breakpad::RawContextCPU;
-using google_breakpad::scoped_array;
 using google_breakpad::SeccompUnwinder;
 using google_breakpad::ThreadInfo;
 using google_breakpad::UContextReader;
@@ -62,6 +60,8 @@ class MicrodumpWriter {
  public:
   MicrodumpWriter(const ExceptionHandler::CrashContext* context,
                   const MappingList& mappings,
+                  const char* build_fingerprint,
+                  const char* product_info,
                   LinuxDumper* dumper)
       : ucontext_(context ? &context->context : NULL),
 #if !defined(__ARM_EABI__) && !defined(__mips__)
@@ -69,24 +69,32 @@ class MicrodumpWriter {
 #endif
         dumper_(dumper),
         mapping_list_(mappings),
-        log_line_(new char[kLineBufferSize]) {
-    log_line_.get()[0] = '\0';  // Clear out the log line buffer.
+        build_fingerprint_(build_fingerprint),
+        product_info_(product_info),
+        log_line_(NULL) {
+    log_line_ = reinterpret_cast<char*>(Alloc(kLineBufferSize));
+    if (log_line_)
+      log_line_[0] = '\0';  // Clear out the log line buffer.
   }
 
   ~MicrodumpWriter() { dumper_->ThreadsResume(); }
 
   bool Init() {
-    if (!dumper_->Init())
+    // In the exceptional case where the system was out of memory and there
+    // wasn't even room to allocate the line buffer, bail out. There is nothing
+    // useful we can possibly achieve without the ability to Log. At least let's
+    // try to not crash.
+    if (!dumper_->Init() || !log_line_)
       return false;
-    return dumper_->ThreadsSuspend();
+    return dumper_->ThreadsSuspend() && dumper_->LateInit();
   }
 
   bool Dump() {
     bool success;
     LogLine("-----BEGIN BREAKPAD MICRODUMP-----");
-    success = DumpOSInformation();
-    if (success)
-      success = DumpCrashingThread();
+    DumpProductInformation();
+    DumpOSInformation();
+    success = DumpCrashingThread();
     if (success)
       success = DumpMappings();
     LogLine("-----END BREAKPAD MICRODUMP-----");
@@ -105,7 +113,7 @@ class MicrodumpWriter {
 
   // Stages the given string in the current line buffer.
   void LogAppend(const char* str) {
-    my_strlcat(log_line_.get(), str, kLineBufferSize);
+    my_strlcat(log_line_, str, kLineBufferSize);
   }
 
   // As above (required to take precedence over template specialization below).
@@ -135,14 +143,21 @@ class MicrodumpWriter {
 
   // Writes out the current line buffer on the system log.
   void LogCommitLine() {
-    LogLine(log_line_.get());
-    my_strlcpy(log_line_.get(), "", kLineBufferSize);
+    LogLine(log_line_);
+    my_strlcpy(log_line_, "", kLineBufferSize);
   }
 
-  bool DumpOSInformation() {
-    struct utsname uts;
-    if (uname(&uts))
-      return false;
+  void DumpProductInformation() {
+    LogAppend("V ");
+    if (product_info_) {
+      LogAppend(product_info_);
+    } else {
+      LogAppend("UNKNOWN:0.0.0.0");
+    }
+    LogCommitLine();
+  }
+
+  void DumpOSInformation() {
     const uint8_t n_cpus = static_cast<uint8_t>(sysconf(_SC_NPROCESSORS_CONF));
 
 #if defined(__ANDROID__)
@@ -174,13 +189,23 @@ class MicrodumpWriter {
     LogAppend(" ");
     LogAppend(n_cpus);
     LogAppend(" ");
-    LogAppend(uts.machine);
-    LogAppend(" ");
-    LogAppend(uts.release);
-    LogAppend(" ");
-    LogAppend(uts.version);
+    // If the client has attached a build fingerprint to the MinidumpDescriptor
+    // use that one. Otherwise try to get some basic info from uname().
+    if (build_fingerprint_) {
+      LogAppend(build_fingerprint_);
+    } else {
+      struct utsname uts;
+      if (uname(&uts) == 0) {
+        LogAppend(uts.machine);
+        LogAppend(" ");
+        LogAppend(uts.release);
+        LogAppend(" ");
+        LogAppend(uts.version);
+      } else {
+        LogAppend("no build fingerprint available");
+      }
+    }
     LogCommitLine();
-    return true;
   }
 
   bool DumpThreadStack(uint32_t thread_id,
@@ -363,7 +388,9 @@ class MicrodumpWriter {
 #endif
   LinuxDumper* dumper_;
   const MappingList& mapping_list_;
-  scoped_array<char> log_line_;
+  const char* const build_fingerprint_;
+  const char* const product_info_;
+  char* log_line_;
 };
 }  // namespace
 
@@ -372,7 +399,9 @@ namespace google_breakpad {
 bool WriteMicrodump(pid_t crashing_process,
                     const void* blob,
                     size_t blob_size,
-                    const MappingList& mappings) {
+                    const MappingList& mappings,
+                    const char* build_fingerprint,
+                    const char* product_info) {
   LinuxPtraceDumper dumper(crashing_process);
   const ExceptionHandler::CrashContext* context = NULL;
   if (blob) {
@@ -384,7 +413,8 @@ bool WriteMicrodump(pid_t crashing_process,
     dumper.set_crash_signal(context->siginfo.si_signo);
     dumper.set_crash_thread(context->tid);
   }
-  MicrodumpWriter writer(context, mappings, &dumper);
+  MicrodumpWriter writer(context, mappings, build_fingerprint, product_info,
+                         &dumper);
   if (!writer.Init())
     return false;
   return writer.Dump();

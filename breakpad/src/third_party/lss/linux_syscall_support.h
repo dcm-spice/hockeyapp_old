@@ -2579,7 +2579,7 @@ struct kernel_statfs {
     #define LSS_BODY(type,name,r7,...)                                        \
           register unsigned long __v0 __asm__("$2") = __NR_##name;            \
           __asm__ __volatile__ ("syscall\n"                                   \
-                                : "=r"(__v0), r7 (__r7)                       \
+                                : "+r"(__v0), r7 (__r7)                       \
                                 : "0"(__v0), ##__VA_ARGS__                    \
                                 : LSS_SYSCALL_CLOBBERS);                      \
           LSS_RETURN(type, __v0, __r7)
@@ -2695,7 +2695,7 @@ struct kernel_statfs {
     LSS_INLINE int LSS_NAME(clone)(int (*fn)(void *), void *child_stack,
                                    int flags, void *arg, int *parent_tidptr,
                                    void *newtls, int *child_tidptr) {
-      register unsigned long __v0 __asm__("$2") = -EINVAL;
+      register unsigned long __v0 __asm__("$2");
       register unsigned long __r7 __asm__("$7") = (unsigned long)newtls;
       {
         register int   __flags __asm__("$4") = flags;
@@ -2714,24 +2714,25 @@ struct kernel_statfs {
                              /* if (fn == NULL || child_stack == NULL)
                               *   return -EINVAL;
                               */
-                             "beqz  %4,1f\n"
+                             "li    %0,%2\n"
                              "beqz  %5,1f\n"
+                             "beqz  %6,1f\n"
 
                              /* Push "arg" and "fn" onto the stack that will be
                               * used by the child.
                               */
           #if _MIPS_SIM == _MIPS_SIM_ABI32 && _MIPS_SZPTR == 32
-                             "subu  %5,32\n"
-                             "sw    %4,0(%5)\n"
-                             "sw    %7,4(%5)\n"
+                             "subu  %6,32\n"
+                             "sw    %5,0(%6)\n"
+                             "sw    %8,4(%6)\n"
           #elif _MIPS_SIM == _MIPS_SIM_NABI32
-                             "sub   %5,32\n"
-                             "sw    %4,0(%5)\n"
-                             "sw    %7,8(%5)\n"
+                             "sub   %6,32\n"
+                             "sw    %5,0(%6)\n"
+                             "sw    %8,8(%6)\n"
           #else
-                             "dsubu %5,32\n"
-                             "sd    %4,0(%5)\n"
-                             "sd    %7,8(%5)\n"
+                             "dsubu %6,32\n"
+                             "sd    %5,0(%6)\n"
+                             "sd    %8,8(%6)\n"
           #endif
 
                              /* $7 = syscall($4 = flags,
@@ -2740,7 +2741,7 @@ struct kernel_statfs {
                               *              $7 = newtls,
                               *              $8 = child_tidptr)
                               */
-                             "li    $2,%2\n"
+                             "li    $2,%3\n"
                              "syscall\n"
 
                              /* if ($7 != 0)
@@ -2766,7 +2767,7 @@ struct kernel_statfs {
                              /* Call _exit($2)
                               */
                             "move  $4,$2\n"
-                            "li    $2,%3\n"
+                            "li    $2,%4\n"
                             "syscall\n"
 
                            "1:\n"
@@ -2778,9 +2779,9 @@ struct kernel_statfs {
                              "daddu $29,16\n"
           #endif
                              : "+r" (__v0), "+r" (__r7)
-                             : "i"(__NR_clone), "i"(__NR_exit), "r"(fn),
-                               "r"(__stack), "r"(__flags), "r"(arg),
-                               "r"(__ptid), "r"(__ctid)
+                             : "i"(-EINVAL), "i"(__NR_clone), "i"(__NR_exit),
+                               "r"(fn), "r"(__stack), "r"(__flags), "r"(arg),
+                               "r"(__ptid), "r"(__r7), "r"(__ctid)
                              : "$9", "$10", "$11", "$12", "$13", "$14", "$15",
                                "$24", "$25", "memory");
       }
@@ -3741,7 +3742,7 @@ struct kernel_statfs {
       register unsigned long __v1 __asm__("$3");
       register unsigned long __r7 __asm__("$7");
       __asm__ __volatile__ ("syscall\n"
-                            : "=r"(__v0), "=r"(__v1), "=r" (__r7)
+                            : "+r"(__v0), "=r"(__v1), "=r" (__r7)
                             : "0"(__v0)
                             : "$8", "$9", "$10", "$11", "$12",
                               "$13", "$14", "$15", "$24", "$25", "memory");
@@ -3943,7 +3944,7 @@ struct kernel_statfs {
   LSS_INLINE _syscall2(int, pipe2, int *, pipefd, int, flags)
   LSS_INLINE _syscall5(int, ppoll, struct kernel_pollfd *, u,
                        unsigned int, n, const struct kernel_timespec *, t,
-                       const struct kernel_sigset_t *, sigmask, size_t, s)
+                       const kernel_sigset_t *, sigmask, size_t, s)
   LSS_INLINE _syscall4(int, readlinkat, int, d, const char *, p, char *, b,
                        size_t, s)
 #endif
